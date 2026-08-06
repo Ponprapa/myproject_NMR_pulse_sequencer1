@@ -1,19 +1,57 @@
 /*
- * NMR Pulse Sequencer - Tiny Tapeout (GF180MCU)
- * 8-step fixed pulse sequence generator.
+ * ============================================================
+ *  tt_um_ponprapa_nmr_pulse_sequencer - Tiny Tapeout wrapper
+ * ============================================================
+ *  Thin wrapper that maps the standard TT pin interface
+ *  (ui_in / uo_out / uio_*) onto the high-precision
+ *  nmr_pulse_sequencer core (see nmr_pulse_sequencer.v).
  *
- * uo_out[0] = 90 deg RF pulse channel
- * uo_out[1] = 180 deg RF pulse channel
- * uo_out[2] = readout / ADC trigger
- * uo_out[7:3] = unused (tied low)
+ *  Pin mapping
+ *  -----------
+ *  ui_in[0]    = start_trigger  (pulse high for >=1 clk to start)
+ *  ui_in[7:1]  = unused
  *
- * ui_in[7:4] = step-rate select (clock divider coarse control)
- * ui_in[3:0] = unused for now
+ *  uo_out[0]   = rf_gate    (1 = RF amplifier ON)
+ *  uo_out[1]   = tr_switch  (0 = TX, 1 = RX)
+ *  uo_out[2]   = seq_busy   (1 while a sequence is running)
+ *  uo_out[3]   = seq_done   (1-cycle pulse at end of READOUT)
+ *  uo_out[6:4] = state_out  (current FSM state, debug)
+ *  uo_out[7]   = unused (tied 0)
+ *
+ *  uio_*       = unused (all inputs, high-Z / driven 0)
+ *
+ *  IMPORTANT - clock frequency assumption
+ *  ---------------------------------------
+ *  The core's timing parameters (*_NS) are converted to clock
+ *  cycles using CLK_PERIOD_NS, which MUST match the actual
+ *  clock frequency driving `clk` on silicon / in simulation:
+ *
+ *    - Tiny Tapeout demo board default clock is commonly 10 MHz
+ *      (CLK_PERIOD_NS = 100)
+ *    - The core was designed against a 100 MHz assumption in the
+ *      standalone testbench (CLK_PERIOD_NS = 10)
+ *
+ *  Set CLK_PERIOD_NS below to match whatever clock source will
+ *  actually drive this design before hardening. Getting this
+ *  wrong will not break functionality (the FSM still sequences
+ *  correctly) but every real-world duration will be off by
+ *  whatever ratio the assumed vs. actual clock differs by.
+ * ============================================================
  */
 
 `default_nettype none
 
-module tt_um_ponprapa_nmr_pulse_sequencer (
+module tt_um_ponprapa_nmr_pulse_sequencer #(
+    // --- Clock assumption: adjust to match the real clock source ---
+    parameter integer CLK_PERIOD_NS   = 100,     // default: 10 MHz TT demo clock
+    // --- Sequence timing (ns) - tune to real NMR requirements ---
+    parameter integer PULSE_90_NS     = 5_000,    // 5 us
+    parameter integer DELAY_TAU_NS    = 500_000,  // 500 us
+    parameter integer PULSE_180_NS    = 10_000,   // 10 us
+    parameter integer DELAY_ECHO_NS   = 500_000,  // 500 us
+    parameter integer RINGDOWN_NS     = 200,      // 200 ns
+    parameter integer READOUT_NS      = 1_000_000 // 1 ms
+) (
     input  wire [7:0] ui_in,
     output wire [7:0] uo_out,
     input  wire [7:0] uio_in,
@@ -24,63 +62,54 @@ module tt_um_ponprapa_nmr_pulse_sequencer (
     input  wire        rst_n
 );
 
-    // ---------------------------------------------------------
-    // 1. Clock divider - produces a single-cycle 'tick' pulse
-    //    Divide ratio is set by ui_in[7:4] (4-bit coarse select)
-    // ---------------------------------------------------------
-    reg  [15:0] div_cnt;
-    wire        tick;
-    wire [15:0] div_max = {ui_in[7:4], 12'hFFF};
+    // ------------------------------------------------------------
+    // Core signals
+    // ------------------------------------------------------------
+    wire        rf_gate;
+    wire        tr_switch;
+    wire [2:0]  state_out;
+    wire        seq_busy;
+    wire        seq_done;
 
-    assign tick = (div_cnt == 16'd0);
+    wire        start_trigger = ui_in[0] & ena;
 
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            div_cnt <= 16'd0;
-        else if (ena)
-            div_cnt <= tick ? div_max : (div_cnt - 16'd1);
-    end
+    nmr_pulse_sequencer #(
+        .CLK_PERIOD_NS (CLK_PERIOD_NS),
+        .PULSE_90_NS   (PULSE_90_NS),
+        .DELAY_TAU_NS  (DELAY_TAU_NS),
+        .PULSE_180_NS  (PULSE_180_NS),
+        .DELAY_ECHO_NS (DELAY_ECHO_NS),
+        .RINGDOWN_NS   (RINGDOWN_NS),
+        .READOUT_NS    (READOUT_NS)
+    ) core (
+        .clk           (clk),
+        .rst_n         (rst_n),
+        .start_trigger (start_trigger),
+        .rf_gate       (rf_gate),
+        .tr_switch     (tr_switch),
+        .state_out     (state_out),
+        .seq_busy      (seq_busy),
+        .seq_done      (seq_done)
+    );
 
-    // ---------------------------------------------------------
-    // 2. Step counter - cycles through 8 steps (0..7)
-    // ---------------------------------------------------------
-    localparam N_STEPS = 8;
+    // ------------------------------------------------------------
+    // Output pin mapping
+    // ------------------------------------------------------------
+    assign uo_out = {
+        1'b0,        // [7]   unused
+        state_out,   // [6:4] FSM state (debug)
+        seq_done,    // [3]
+        seq_busy,    // [2]
+        tr_switch,   // [1]
+        rf_gate      // [0]
+    };
 
-    reg [2:0] step;
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            step <= 3'd0;
-        else if (ena && tick)
-            step <= (step == N_STEPS - 1) ? 3'd0 : step + 3'd1;
-    end
-
-    // ---------------------------------------------------------
-    // 3. Pattern table - fixed spin-echo-style sequence
-    //    step: 0=idle 1=90deg 2=delay 3=180deg 4=delay
-    //          5=readout 6=delay 7=idle
-    // ---------------------------------------------------------
-    reg [2:0] pattern_out;
-
-    always @(*) begin
-        case (step)
-            3'd0: pattern_out = 3'b000; // idle
-            3'd1: pattern_out = 3'b001; // 90 deg pulse
-            3'd2: pattern_out = 3'b000; // delay
-            3'd3: pattern_out = 3'b010; // 180 deg pulse
-            3'd4: pattern_out = 3'b000; // delay
-            3'd5: pattern_out = 3'b100; // readout / ADC trigger
-            3'd6: pattern_out = 3'b000; // delay
-            3'd7: pattern_out = 3'b000; // idle
-            default: pattern_out = 3'b000;
-        endcase
-    end
-
-    assign uo_out  = {5'b00000, pattern_out};
     assign uio_out = 8'b0;
     assign uio_oe  = 8'b0;
 
-    // List all unused inputs to avoid warnings
-    wire _unused = &{ena, uio_in, ui_in[3:0], 1'b0};
+    // ------------------------------------------------------------
+    // Unused signal handling (avoid synthesis warnings)
+    // ------------------------------------------------------------
+    wire _unused = &{ui_in[7:1], uio_in, 1'b0};
 
 endmodule
