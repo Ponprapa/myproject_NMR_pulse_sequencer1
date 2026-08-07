@@ -1,13 +1,12 @@
-# Tiny Tapeout project information
-project: 
-  title: "NMR Pulse sequencer"      # Project title
-  author: "Ponprapa Pimpan"      # Your name
-  discord: "Ponprapa"      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description: "Generates configurable RF pulse sequences for NMR experiments"      # One line description of what your project does
-  language: "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
-  clock_hz: 0       # Clock frequency in Hz (or 0 if not applicable)
+project:
+  title:        "NMR Pulse sequencer"      # Project title
+  author:       "Ponprapa Pimpan"      # Your name
+  discord:      "Ponprapa"      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
+  description:  "High-precision FSM-based pulse sequencer for NMR: generates RF gate, T/R switch, and event timing signals for 90/180 degree pulses and readout"      # One line description of what your project does
+  language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
+  clock_hz:     10000000       # Clock frequency in Hz (10 MHz - matches TT demo board clock; see CLK_PERIOD_NS in project.v)
 
-  # How many tiles your design occupies? A single tile is about 340x160 uM.
+  # How many tiles your design occupies? A single tile is about 167x108 uM.
   tiles: "1x1"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 3x4 or 4x4
 
   # Your top module name must start with "tt_um_". Make it unique by including your github username:
