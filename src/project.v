@@ -1,57 +1,40 @@
 /*
  * ============================================================
- *  tt_um_ponprapa_nmr_pulse_sequencer - Tiny Tapeout wrapper
+ *  tt_um_ponprapa_nmr_pulse_sequencer (top-level wrapper)
  * ============================================================
- *  Thin wrapper that maps the standard TT pin interface
- *  (ui_in / uo_out / uio_*) onto the high-precision
- *  nmr_pulse_sequencer core (see nmr_pulse_sequencer.v).
+ *  Connects the standard Tiny Tapeout pin interface to two
+ *  linked submodules:
  *
- *  Pin mapping
- *  -----------
- *  ui_in[0]    = start_trigger  (pulse high for >=1 clk to start)
- *  ui_in[7:1]  = unused
+ *    config_regs  - latches runtime-configurable parameters
+ *                   (echo_count, pulse_width, delay_time)
+ *    pulse_fsm    - CPMG-style multi-echo sequencing core,
+ *                   consumes the config_regs outputs directly
  *
- *  uo_out[0]   = rf_gate    (1 = RF amplifier ON)
- *  uo_out[1]   = tr_switch  (0 = TX, 1 = RX)
- *  uo_out[2]   = seq_busy   (1 while a sequence is running)
- *  uo_out[3]   = seq_done   (1-cycle pulse at end of READOUT)
- *  uo_out[6:4] = state_out  (current FSM state, debug)
- *  uo_out[7]   = unused (tied 0)
+ *  ---------------------------------------------------------
+ *  Configuration protocol (uio_in bits, all edge-triggered):
+ *  ---------------------------------------------------------
+ *    uio_in[0] = load_echo_count   : latch ui_in[3:0]  -> echo_count
+ *    uio_in[1] = load_pulse_width  : latch ui_in[7:0]  -> pulse_width
+ *    uio_in[2] = load_delay_low    : latch ui_in[7:0]  -> delay_time[7:0]
+ *    uio_in[3] = load_delay_high   : latch ui_in[7:0]  -> delay_time[15:8]
+ *    uio_in[4] = start_trigger     : begin the sequence
  *
- *  uio_*       = unused (all inputs, high-Z / driven 0)
- *
- *  IMPORTANT - clock frequency assumption
- *  ---------------------------------------
- *  The core's timing parameters (*_NS) are converted to clock
- *  cycles using CLK_PERIOD_NS, which MUST match the actual
- *  clock frequency driving `clk` on silicon / in simulation:
- *
- *    - Tiny Tapeout demo board default clock is commonly 10 MHz
- *      (CLK_PERIOD_NS = 100)
- *    - The core was designed against a 100 MHz assumption in the
- *      standalone testbench (CLK_PERIOD_NS = 10)
- *
- *  Set CLK_PERIOD_NS below to match whatever clock source will
- *  actually drive this design before hardening. Getting this
- *  wrong will not break functionality (the FSM still sequences
- *  correctly) but every real-world duration will be off by
- *  whatever ratio the assumed vs. actual clock differs by.
+ *  ---------------------------------------------------------
+ *  Output pin mapping (uo_out):
+ *  ---------------------------------------------------------
+ *    uo_out[0]   = rf_gate     (1 = RF power amplifier ON)
+ *    uo_out[1]   = sine_en     (1 = external sine/DDS source ON,
+ *                                mirrors rf_gate exactly)
+ *    uo_out[2]   = tr_switch   (0 = TX, 1 = RX; RX only during ECHO)
+ *    uo_out[3]   = seq_busy
+ *    uo_out[4]   = seq_done    (1-cycle pulse when sequence ends)
+ *    uo_out[7:5] = echo_index[2:0] (which echo is active, debug)
  * ============================================================
  */
 
 `default_nettype none
 
-module tt_um_ponprapa_nmr_pulse_sequencer #(
-    // --- Clock assumption: adjust to match the real clock source ---
-    parameter integer CLK_PERIOD_NS   = 100,     // default: 10 MHz TT demo clock
-    // --- Sequence timing (ns) - tune to real NMR requirements ---
-    parameter integer PULSE_90_NS     = 5_000,    // 5 us
-    parameter integer DELAY_TAU_NS    = 500_000,  // 500 us
-    parameter integer PULSE_180_NS    = 10_000,   // 10 us
-    parameter integer DELAY_ECHO_NS   = 500_000,  // 500 us
-    parameter integer RINGDOWN_NS     = 200,      // 200 ns
-    parameter integer READOUT_NS      = 1_000_000 // 1 ms
-) (
+module tt_um_ponprapa_nmr_pulse_sequencer (
     input  wire [7:0] ui_in,
     output wire [7:0] uo_out,
     input  wire [7:0] uio_in,
@@ -63,53 +46,69 @@ module tt_um_ponprapa_nmr_pulse_sequencer #(
 );
 
     // ------------------------------------------------------------
-    // Core signals
+    // Configuration registers
     // ------------------------------------------------------------
-    wire        rf_gate;
-    wire        tr_switch;
-    wire [2:0]  state_out;
-    wire        seq_busy;
-    wire        seq_done;
+    wire [3:0]  echo_count;
+    wire [7:0]  pulse_width;
+    wire [15:0] delay_time;
 
-    wire        start_trigger = ui_in[0] & ena;
-
-    nmr_pulse_sequencer #(
-        .CLK_PERIOD_NS (CLK_PERIOD_NS),
-        .PULSE_90_NS   (PULSE_90_NS),
-        .DELAY_TAU_NS  (DELAY_TAU_NS),
-        .PULSE_180_NS  (PULSE_180_NS),
-        .DELAY_ECHO_NS (DELAY_ECHO_NS),
-        .RINGDOWN_NS   (RINGDOWN_NS),
-        .READOUT_NS    (READOUT_NS)
-    ) core (
+    config_regs u_config_regs (
         .clk           (clk),
         .rst_n         (rst_n),
-        .start_trigger (start_trigger),
-        .rf_gate       (rf_gate),
-        .tr_switch     (tr_switch),
-        .state_out     (state_out),
-        .seq_busy      (seq_busy),
-        .seq_done      (seq_done)
+        .data_in       (ui_in),
+        .load_echo     (uio_in[0]),
+        .load_width    (uio_in[1]),
+        .load_delay_lo (uio_in[2]),
+        .load_delay_hi (uio_in[3]),
+        .echo_count    (echo_count),
+        .pulse_width   (pulse_width),
+        .delay_time    (delay_time)
     );
+
+    // ------------------------------------------------------------
+    // Sequencing core
+    // ------------------------------------------------------------
+    wire       rf_gate;
+    wire       tr_switch;
+    wire       seq_busy;
+    wire       seq_done;
+    wire [3:0] echo_index;
+
+    wire start_trigger = uio_in[4] & ena;
+
+    pulse_fsm u_pulse_fsm (
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .start       (start_trigger),
+        .echo_count  (echo_count),
+        .pulse_width (pulse_width),
+        .delay_time  (delay_time),
+        .rf_gate     (rf_gate),
+        .tr_switch   (tr_switch),
+        .seq_busy    (seq_busy),
+        .seq_done    (seq_done),
+        .echo_index  (echo_index)
+    );
+
+    // sine_en mirrors rf_gate exactly (separate physical pin, same
+    // timing, per the "pulse ON together with sine ON" requirement)
+    wire sine_en = rf_gate;
 
     // ------------------------------------------------------------
     // Output pin mapping
     // ------------------------------------------------------------
     assign uo_out = {
-        1'b0,        // [7]   unused
-        state_out,   // [6:4] FSM state (debug)
-        seq_done,    // [3]
-        seq_busy,    // [2]
-        tr_switch,   // [1]
-        rf_gate      // [0]
+        echo_index[2:0], // [7:5]
+        seq_done,        // [4]
+        seq_busy,        // [3]
+        tr_switch,       // [2]
+        sine_en,         // [1]
+        rf_gate          // [0]
     };
 
     assign uio_out = 8'b0;
     assign uio_oe  = 8'b0;
 
-    // ------------------------------------------------------------
-    // Unused signal handling (avoid synthesis warnings)
-    // ------------------------------------------------------------
-    wire _unused = &{ui_in[7:1], uio_in, 1'b0};
+    wire _unused = &{uio_in[7:5], echo_index[3], 1'b0};
 
 endmodule
