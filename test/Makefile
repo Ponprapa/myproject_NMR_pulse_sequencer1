@@ -5,7 +5,7 @@ SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = project.v nmr_pulse_sequencer.v
+PROJECT_SOURCES = project.v config_regs.v pulse_fsm.v
 ifneq ($(GATES),yes)
 # RTL simulation:
 SIM_BUILD				= sim_build/rtl
