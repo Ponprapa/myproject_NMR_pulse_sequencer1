@@ -101,7 +101,7 @@ module pulse_fsm #(
             echo_index <= echo_index + 4'd1;
     end
 
-    wire more_echoes_left = (echo_index + 4'd1) < echo_count_eff;
+    wire more_echoes_left = echo_index < echo_count_eff;
 
     // ------------------------------------------------------------
     // FSM: state register
