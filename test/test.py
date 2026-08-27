@@ -158,7 +158,7 @@ async def test_cpmg_sequence_timing_and_safety(dut):
     dut.uio_in.value = 0
 
     # Sample every cycle, tracking rf_gate / tr_switch run-lengths
-    rf_runs = []      # list of (start_cycle, length) for rf_gate high runs
+    rf_runs = []      # list of pulse-high run lengths for rf_gate
     tr_runs = []      # same for tr_switch
     echo_idx_trace = []
     seq_done_count = 0
@@ -204,12 +204,9 @@ async def test_cpmg_sequence_timing_and_safety(dut):
         if d["seq_done"]:
             seq_done_count += 1
 
-        # Stop shortly after the sequence returns to idle following
-        # completion.
         if seq_done_count > 0 and not d["seq_busy"] and i > 20:
             break
 
-    # Flush any run still in progress at loop end
     if in_rf_run:
         rf_runs.append(rf_run_len)
     if in_tr_run:
@@ -220,21 +217,16 @@ async def test_cpmg_sequence_timing_and_safety(dut):
     dut._log.info(f"echo_idx trace: {echo_idx_trace}")
     dut._log.info(f"seq_done pulses seen: {seq_done_count}")
 
-    # --- Check 1: sine_en tracked rf_gate on every sample ---
     assert sine_mismatch == 0, (
         f"sine_en differed from rf_gate on {sine_mismatch} sample(s) - "
         f"they must be identical at all times"
     )
 
-    # --- Check 2: rf_gate and tr_switch never overlapped ---
     assert overlap_violations == 0, (
         f"rf_gate and tr_switch were both high simultaneously on "
         f"{overlap_violations} sample(s) - TX/RX safety violation"
     )
 
-    # --- Check 3: exact pulse widths ---
-    # Expected: one 90-deg pulse (PULSE_WIDTH), then one 180-deg
-    # pulse (PULSE_WIDTH*2) per echo.
     expected_rf_runs = [PULSE_WIDTH] + [PULSE_WIDTH * 2] * ECHO_COUNT
     assert rf_runs == expected_rf_runs, (
         f"rf_gate pulse widths do not match configured pulse_width.\n"
@@ -242,7 +234,6 @@ async def test_cpmg_sequence_timing_and_safety(dut):
         f"  got:      {rf_runs}"
     )
 
-    # --- Check 4: readout window fired once per echo ---
     assert len(tr_runs) == ECHO_COUNT, (
         f"expected {ECHO_COUNT} readout (tr_switch) windows, "
         f"got {len(tr_runs)}: {tr_runs}"
@@ -251,8 +242,6 @@ async def test_cpmg_sequence_timing_and_safety(dut):
         f"all readout windows should be the same fixed length, got {tr_runs}"
     )
 
-    # --- Check 5: echo_idx advanced through 0..ECHO_COUNT-1 and
-    #     returned to 0 at the end ---
     assert 0 in echo_idx_trace and (ECHO_COUNT - 1) in echo_idx_trace, (
         f"echo_idx did not visit the expected range 0..{ECHO_COUNT-1}: "
         f"{echo_idx_trace}"
@@ -262,7 +251,6 @@ async def test_cpmg_sequence_timing_and_safety(dut):
         f"got trace ending in {echo_idx_trace[-5:]}"
     )
 
-    # --- Check 6: seq_done pulsed exactly once ---
     assert seq_done_count == 1, (
         f"expected exactly 1 seq_done pulse, saw {seq_done_count}"
     )
