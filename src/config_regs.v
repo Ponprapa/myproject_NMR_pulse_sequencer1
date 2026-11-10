@@ -4,9 +4,14 @@
  * ============================================================
  *  Handles runtime configuration of the pulse sequencer:
  *    - echo_count  : number of echoes to acquire
- *    - pulse_width : 90 deg pulse width, in clock cycles
- *    - delay_time  : tau, in clock cycles (16-bit, loaded as
- *                    two 8-bit bytes: low then high)
+ *    - pulse_width : 90 deg pulse width, in clock cycles (180 deg pulse = 2 * pulse_width)
+ *    - delay_time  : gap from END of the 90 deg pulse to START of
+ *                    the first 180 deg pulse, in clock cycles
+ *                    (16-bit, loaded as two 8-bit bytes: low then high).
+ *                    Echo spacing = 2*delay_time + 3*pulse_width.
+ *                    Must satisfy 2*delay_time + pulse_width >= 52
+ *                    (READOUT_CYCLES + 2*MIN_GAP_CYCLES) or the
+ *                    sequencer rejects the start and sets cfg_err.
  *
  *  Each field is written by pulsing its corresponding load_*
  *  strobe for one clock cycle while the desired byte is present
