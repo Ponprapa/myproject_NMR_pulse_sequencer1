@@ -1,37 +1,3 @@
-/*
- * ============================================================
- *  tt_um_ponprapa_nmr_pulse_sequencer (top-level wrapper)
- * ============================================================
- *  Connects the standard Tiny Tapeout pin interface to two
- *  linked submodules:
- *
- *    config_regs  - latches runtime-configurable parameters
- *                   (echo_count, pulse_width, delay_time)
- *    pulse_fsm    - CPMG-style multi-echo sequencing core,
- *                   consumes the config_regs outputs directly
- *
- *  ---------------------------------------------------------
- *  Configuration protocol (uio_in bits, all edge-triggered):
- *  ---------------------------------------------------------
- *    uio_in[0] = load_echo_count   : latch ui_in[3:0]  -> echo_count
- *    uio_in[1] = load_pulse_width  : latch ui_in[7:0]  -> pulse_width
- *    uio_in[2] = load_delay_low    : latch ui_in[7:0]  -> delay_time[7:0]
- *    uio_in[3] = load_delay_high   : latch ui_in[7:0]  -> delay_time[15:8]
- *    uio_in[4] = start_trigger     : begin the sequence
- *
- *  ---------------------------------------------------------
- *  Output pin mapping (uo_out):
- *  ---------------------------------------------------------
- *    uo_out[0]   = rf_gate     (1 = RF power amplifier ON)
- *    uo_out[1]   = sine_en     (1 = external sine/DDS source ON,
- *                                mirrors rf_gate exactly)
- *    uo_out[2]   = tr_switch   (0 = TX, 1 = RX; RX only during ECHO)
- *    uo_out[3]   = seq_busy
- *    uo_out[4]   = seq_done    (1-cycle pulse when sequence ends)
- *    uo_out[7:5] = echo_index[2:0] (which echo is active, debug)
- * ============================================================
- */
-
 `default_nettype none
 
 module tt_um_ponprapa_nmr_pulse_sequencer (
@@ -45,36 +11,43 @@ module tt_um_ponprapa_nmr_pulse_sequencer (
     input  wire        rst_n
 );
 
-    // ------------------------------------------------------------
-    // Configuration registers
-    // ------------------------------------------------------------
+    // Input synchronisers (asynchronous pins -> clk domain).
+    // Same depth for data and strobes so the captured byte matches.
+    reg [7:0] ui_s1,  ui_s2;
+    reg [4:0] uio_s1, uio_s2;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            ui_s1  <= 8'd0;  ui_s2  <= 8'd0;
+            uio_s1 <= 5'd0;  uio_s2 <= 5'd0;
+        end else begin
+            ui_s1  <= ui_in;        ui_s2  <= ui_s1;
+            uio_s1 <= uio_in[4:0];  uio_s2 <= uio_s1;
+        end
+    end
+
     wire [3:0]  echo_count;
     wire [7:0]  pulse_width;
     wire [15:0] delay_time;
 
-    config_regs u_config_regs (
+    config_regs u_config_regs (            // module unchanged
         .clk           (clk),
         .rst_n         (rst_n),
-        .data_in       (ui_in),
-        .load_echo     (uio_in[0]),
-        .load_width    (uio_in[1]),
-        .load_delay_lo (uio_in[2]),
-        .load_delay_hi (uio_in[3]),
+        .data_in       (ui_s2),
+        .load_echo     (uio_s2[0]),
+        .load_width    (uio_s2[1]),
+        .load_delay_lo (uio_s2[2]),
+        .load_delay_hi (uio_s2[3]),
         .echo_count    (echo_count),
         .pulse_width   (pulse_width),
         .delay_time    (delay_time)
     );
 
-    // ------------------------------------------------------------
-    // Sequencing core
-    // ------------------------------------------------------------
-    wire       rf_gate;
-    wire       tr_switch;
-    wire       seq_busy;
-    wire       seq_done;
+    wire       rf_gate, rf_phase, tr_switch;
+    wire       seq_busy, seq_done, cfg_err;
     wire [3:0] echo_index;
 
-    wire start_trigger = uio_in[4] & ena;
+    wire start_trigger = uio_s2[4] & ena;
 
     pulse_fsm u_pulse_fsm (
         .clk         (clk),
@@ -84,20 +57,17 @@ module tt_um_ponprapa_nmr_pulse_sequencer (
         .pulse_width (pulse_width),
         .delay_time  (delay_time),
         .rf_gate     (rf_gate),
+        .rf_phase    (rf_phase),
         .tr_switch   (tr_switch),
         .seq_busy    (seq_busy),
         .seq_done    (seq_done),
+        .cfg_err     (cfg_err),
         .echo_index  (echo_index)
     );
 
-    // sine_en mirrors rf_gate exactly (separate physical pin, same
-    // timing, per the "pulse ON together with sine ON" requirement)
     wire sine_en = rf_gate;
 
-    // ------------------------------------------------------------
-    // Output pin mapping
-    // ------------------------------------------------------------
-    assign uo_out = {
+    assign uo_out = {               // unchanged mapping
         echo_index[2:0], // [7:5]
         seq_done,        // [4]
         seq_busy,        // [3]
@@ -106,8 +76,8 @@ module tt_um_ponprapa_nmr_pulse_sequencer (
         rf_gate          // [0]
     };
 
-    assign uio_out = 8'b0;
-    assign uio_oe  = 8'b0;
+    assign uio_out = {1'b0, cfg_err, rf_phase, 5'b0};
+    assign uio_oe  = 8'b0110_0000;   // uio[6:5] outputs, others inputs
 
     wire _unused = &{uio_in[7:5], echo_index[3], 1'b0};
 
