@@ -66,7 +66,7 @@ def expected_cycles(n, pw, dly):
 
 
 async def start_clock(dut):
-    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
 
 
 async def reset_dut(dut):
@@ -162,7 +162,10 @@ def check_cpmg(trace, n, pw, dly):
     # end of sequence
     assert sum(d["done"] for d in trace) == 1, "seq_done must pulse once"
     assert trace[-1]["busy"] == 0 and trace[-1]["eidx"] == 0
-    assert not any(d["err"] for d in trace)
+    # cfg_err may still show the result of a previous rejected start
+    # until this start is accepted; it must be 0 for the whole run.
+    assert not any(d["err"] for d in trace if d["busy"]), \
+        "cfg_err must be 0 while the sequence is running"#assert not any(d["err"] for d in trace)
     assert G >= READOUT_CYCLES + 2 * MIN_GAP_CYCLES
 
 
@@ -251,8 +254,11 @@ async def test_05_invalid_parameters(dut):
         assert not any(d["rf"] or d["tr"] or d["busy"] for d in trace), \
             f"invalid {n, pw, dly} must not start"
         assert trace[-1]["err"] == 1, f"cfg_err must be set for {n, pw, dly}"
-    await run_and_check(dut, 1, 5, 40)
-    assert sample(dut)["err"] == 0, "valid start must clear cfg_err"
+        trace = await run_and_check(dut, 1, 5, 40)
+        first_rf = runs(trace, "rf")[0][0]
+        assert all(d["err"] == 0 for d in trace[first_rf:]), \
+           "cfg_err must clear before the first RF pulse of a valid run"
+        assert sample(dut)["err"] == 0, "valid start must clear cfg_err"
 
 
 # 11. reset in the middle of a sequence
@@ -264,7 +270,7 @@ async def test_06_reset_during_run(dut):
     await pulse_start(dut)
     await ClockCycles(dut.clk, 60)          # somewhere inside the train
     dut.rst_n.value = 0
-    await Timer(1, units="ns")               # async reset: outputs drop at once
+    await Timer(1, unit="ns")               # async reset: outputs drop at once
     d = sample(dut)
     assert d["rf"] == 0 and d["tr"] == 0 and d["busy"] == 0
     await ClockCycles(dut.clk, 3)
